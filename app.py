@@ -13,7 +13,6 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-# 清理环境代理，避免系统代理干扰
 for key in [
     "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
     "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"
@@ -28,10 +27,8 @@ DB = "cls_news.db"
 FETCH_INTERVAL = 60
 QUOTE_INTERVAL = 45
 
-# ✅ 只推送这个飞书机器人
 FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/36d76c0a-d013-455a-9017-c13f259c7b5e"
 
-# 更稳的 requests Session
 session = requests.Session()
 session.trust_env = False
 
@@ -66,7 +63,6 @@ EM_HEADERS = {
 
 QUOTE_CACHE = {}
 
-# 股票库（可按需添加）
 STOCKS = [
     {"code": "600875", "name": "东方电气", "aliases": ["东方电气"], "concepts": ["风电", "核电", "发电设备"]},
     {"code": "605196", "name": "华通线缆", "aliases": ["华通线缆"], "concepts": ["电缆", "海缆"]},
@@ -78,28 +74,14 @@ STOCKS = [
     {"code": "300502", "name": "新易盛", "aliases": ["新易盛"], "concepts": ["光模块", "AI算力"]},
 ]
 
-HOT = [
-    "涨停", "大涨", "算力", "AI", "机器人",
-    "光模块", "风电", "光伏", "储能",
-    "中标", "签约", "订单", "合作", "重组"
-]
-
-# 龙头股判断
-def is_leading_stock(name: str) -> bool:
-    return "龙头" in name or "领先" in name
-
-
 def now_full():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
 
 def fp(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
-
 def get_conn():
     return sqlite3.connect(DB, check_same_thread=False)
-
 
 def init_db():
     conn = get_conn()
@@ -116,9 +98,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
-
-# —— 行情抓取 —— #
 
 def update_quotes():
     global QUOTE_CACHE
@@ -150,7 +129,6 @@ def update_quotes():
                 code = str(row.get("f12", "")).zfill(6)
                 if not code:
                     continue
-
                 cache[code] = {
                     "price": row.get("f2"),
                     "pct": row.get("f3"),
@@ -165,16 +143,12 @@ def update_quotes():
                 print(f"[{now_full()}] 行情返回为空")
 
         except Exception as e:
-            print(f"[{now_full()}] 行情失败:", repr(e))
+            print(f"[{now_full()}] 行情失败: {repr(e)}")
 
         time.sleep(QUOTE_INTERVAL)
 
-
 def get_quote(code: str):
     return QUOTE_CACHE.get(code)
-
-
-# —— 财联社抓取 —— #
 
 def fetch():
     resp = session.get(URL, headers=COMMON_HEADERS, timeout=(8, 15))
@@ -182,6 +156,7 @@ def fetch():
 
     soup = BeautifulSoup(resp.text, "html.parser")
     res = []
+
     for i in soup.select("div#tele span"):
         t = i.get_text(" ", strip=True)
         if "财联社" in t and len(t) > 20:
@@ -197,28 +172,33 @@ def fetch():
 
     return uniq
 
-
 def match(text: str):
     res = []
+
     for s in STOCKS:
         matched = None
+
         for a in s["aliases"]:
             if a in text:
                 matched = {**s, "match_type": "alias", "hit": a}
                 break
+
         if not matched:
             for c in s["concepts"]:
                 if c in text:
                     matched = {**s, "match_type": "concept", "hit": c}
                     break
+
         if matched:
             res.append(matched)
 
-    # 龙头放前面
-    leading = [s for s in res if is_leading_stock(s["name"])]
-    others = [s for s in res if not is_leading_stock(s["name"])]
-    return leading + others
+    uniq = {}
+    for item in res:
+        code = item["code"]
+        if code not in uniq:
+            uniq[code] = item
 
+    return list(uniq.values())
 
 def send(msg: str):
     data = {
@@ -229,33 +209,37 @@ def send(msg: str):
         resp = session.post(FEISHU_WEBHOOK, json=data, headers=COMMON_HEADERS, timeout=(8, 12))
         print(f"[{now_full()}] 飞书推送: {resp.status_code}")
     except Exception as e:
-        print(f"[{now_full()}] 飞书推送失败:", repr(e))
+        print(f"[{now_full()}] 飞书推送失败: {repr(e)}")
 
-
-def build_push_message(line: str, stocks: list):
+def build_push_message(line: str, stocks: list) -> str:
     msg = "【财联社监控】\n\n"
     msg += line + "\n\n"
-    msg += "关联股票：\n"
-    for s in stocks[:5]:
-        q = get_quote(s["code"])
-        if q:
-            msg += (f"- {s['name']}({s['code']}) "
-                    f"{q['price']} {q['pct']}%\n")
-        else:
-            msg += f"- {s['name']}({s['code']})\n"
+
+    if stocks:
+        msg += "关联股票：\n"
+        for s in stocks[:5]:
+            q = get_quote(s["code"])
+            if q:
+                msg += f"- {s['name']}({s['code']}) / {q['price']} / {q['pct']}%\n"
+            else:
+                msg += f"- {s['name']}({s['code']})\n"
+    else:
+        msg += "未匹配到股票\n"
+
     msg += "\n仅供信息整理参考，不构成投资建议。"
     return msg
-
 
 def save(lines):
     conn = get_conn()
     cur = conn.cursor()
+
     new_count = 0
     pushed_count = 0
 
     for line in lines:
         h = fp(line)
         stocks = match(line)
+
         try:
             cur.execute(
                 "INSERT INTO news(content,hash,related_stocks,pushed,time) VALUES(?,?,?,?,?)",
@@ -264,19 +248,21 @@ def save(lines):
             news_id = cur.lastrowid
             new_count += 1
 
-            if stocks:
-                msg = build_push_message(line, stocks)
-                send(msg)
-                cur.execute("UPDATE news SET pushed=1 WHERE id=?", (news_id,))
-                pushed_count += 1
+            # A方案：全部推送
+            msg = build_push_message(line, stocks)
+            send(msg)
+
+            cur.execute("UPDATE news SET pushed=1 WHERE id=?", (news_id,))
+            pushed_count += 1
 
         except sqlite3.IntegrityError:
             pass
+        except Exception as e:
+            print(f"[{now_full()}] 保存失败: {repr(e)}")
 
     conn.commit()
     conn.close()
     return new_count, pushed_count
-
 
 def loop():
     while True:
@@ -285,9 +271,8 @@ def loop():
             new_count, pushed_count = save(lines)
             print(f"[{now_full()}] 本轮新增 {new_count} 条，推送 {pushed_count} 条")
         except Exception as e:
-            print(f"[{now_full()}] 抓取失败:", repr(e))
+            print(f"[{now_full()}] 抓取失败: {repr(e)}")
         time.sleep(FETCH_INTERVAL)
-
 
 @app.on_event("startup")
 def startup():
@@ -295,27 +280,61 @@ def startup():
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=update_quotes, daemon=True).start()
 
-
 @app.get("/", response_class=HTMLResponse)
 def home():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT content,time,pushed FROM news ORDER BY id DESC LIMIT 200")
+    cur.execute("SELECT content,time,pushed,related_stocks FROM news ORDER BY id DESC LIMIT 200")
     rows = cur.fetchall()
     conn.close()
 
-    html = "<html><head><meta charset='utf-8'></head><body>"
-    html += "<h3>财联社监控</h3><a href='/refresh'>手动抓取</a><hr>"
+    html = """
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>财联社监控</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 1100px; margin: 20px auto; }
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+        .time { color: #666; font-size: 13px; margin-bottom: 8px; }
+        .stock { display: inline-block; padding: 3px 8px; border-radius: 12px; background: #f2f2f2; margin-right: 6px; margin-top: 6px; font-size: 13px; }
+        .pushed { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #d9f7be; font-size: 12px; margin-left: 8px; }
+      </style>
+    </head>
+    <body>
+      <h3>财联社监控</h3>
+      <p><a href="/refresh">手动抓取</a></p>
+      <hr>
+    """
 
-    for content, t, pushed in rows:
-        html += f"<div>{t} {'[已推送]' if pushed else ''}<br>{content}</div><hr>"
+    for content, t, pushed, related_stocks in rows:
+        try:
+            stock_list = json.loads(related_stocks) if related_stocks else []
+        except Exception:
+            stock_list = []
+
+        html += '<div class="card">'
+        html += f'<div class="time">{t} {"<span class=\'pushed\'>已推送</span>" if pushed == 1 else ""}</div>'
+        html += f"<div>{content}</div>"
+
+        if stock_list:
+            html += '<div style="margin-top:10px;">'
+            for s in stock_list:
+                q = get_quote(s["code"])
+                if q:
+                    html += f'<span class="stock">{s["name"]}({s["code"]}) / {q["price"]} / {q["pct"]}%</span>'
+                else:
+                    html += f'<span class="stock">{s["name"]}({s["code"]})</span>'
+            html += "</div>"
+
+        html += "</div>"
 
     html += "</body></html>"
     return html
-
 
 @app.get("/refresh")
 def refresh():
     lines = fetch()
     new_count, pushed_count = save(lines)
+    print(f"[{now_full()}] 手动抓取: 新增 {new_count} 条，推送 {pushed_count} 条")
     return RedirectResponse("/", status_code=302)

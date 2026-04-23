@@ -26,11 +26,16 @@ DB = "cls_news.db"
 FETCH_INTERVAL = 60
 QUOTE_INTERVAL = 45
 
-FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/36d76c0a-d013-455a-9017-c13f259c7b5e"
-
 CLS_URL = "https://m.cls.cn/telegraph"
 EM_KX_URL = "https://kuaixun.eastmoney.com/"
 THS_KX_URL = "https://stock.10jqka.com.cn/kx/"
+
+# 多群 webhook
+FEISHU_WEBHOOKS = {
+    "ai": "https://open.feishu.cn/open-apis/bot/v2/hook/364ad825-1f90-4d88-9948-b69b8c98b4ce",
+    "energy": "https://open.feishu.cn/open-apis/bot/v2/hook/79ac4918-6a47-42e7-95f1-d5c1a0e23db1",
+    "finance": "https://open.feishu.cn/open-apis/bot/v2/hook/1fe92053-ceb6-46c6-aa6a-05235d4ba6a8",
+}
 
 QUOTE_CACHE = {}
 
@@ -47,23 +52,19 @@ STOCKS = [
     {"code": "600941", "name": "中国移动", "aliases": ["中国移动"], "concepts": ["算力", "数据中心", "云计算"]},
     {"code": "600050", "name": "中国联通", "aliases": ["中国联通"], "concepts": ["算力", "数据中心", "云计算"]},
     {"code": "002230", "name": "科大讯飞", "aliases": ["科大讯飞", "讯飞"], "concepts": ["人工智能", "AI", "大模型"]},
-    {"code": "300024", "name": "机器人", "aliases": ["机器人", "新松"], "concepts": ["机器人", "人形机器人"]},
-    {"code": "300124", "name": "汇川技术", "aliases": ["汇川技术"], "concepts": ["机器人", "伺服", "自动化"]},
+    {"code": "601318", "name": "中国平安", "aliases": ["中国平安"], "concepts": ["保险", "金融"]},
+    {"code": "600030", "name": "中信证券", "aliases": ["中信证券"], "concepts": ["券商", "金融"]},
+    {"code": "601398", "name": "工商银行", "aliases": ["工商银行"], "concepts": ["银行", "金融"]},
 ]
 
 THEME_KEYWORDS = {
-    "核电": ["核电", "核能", "机组", "核准待建"],
-    "风电": ["风电", "海上风电", "风机"],
-    "光伏": ["光伏", "组件", "电池片"],
-    "储能": ["储能", "锂电", "电池"],
-    "算力": ["算力", "AI服务器", "GPU", "数据中心", "液冷"],
-    "光模块": ["光模块", "CPO", "800G"],
-    "机器人": ["机器人", "人形机器人", "伺服", "减速器"],
-    "通信": ["5G", "运营商", "通信"],
+    "算力": ["算力", "AI服务器", "GPU", "数据中心", "液冷", "大模型", "人工智能", "光模块", "CPO", "AI芯片"],
+    "新能源": ["风电", "光伏", "储能", "核电", "锂电", "电池片", "海上风电", "机组"],
+    "金融": ["银行", "券商", "保险", "降准", "降息", "MLF", "LPR", "货币政策", "金融", "逆回购"],
 }
 
 POSITIVE_WORDS_STRONG = [
-    "全球第一", "居全球第一", "持续增长", "领先", "新高", "大增", "显著增长",
+    "全球第一", "居全球第一", "持续增长", "领先", "新高", "大增",
     "中标", "签约", "获批", "订单", "开工", "投产", "量产", "扩产", "核准"
 ]
 POSITIVE_WORDS_MEDIUM = [
@@ -129,6 +130,7 @@ def init_db():
         hash TEXT UNIQUE,
         related_stocks TEXT,
         analysis TEXT,
+        channels TEXT,
         pushed INTEGER DEFAULT 0,
         time TEXT
     )
@@ -289,10 +291,12 @@ def estimate_move(direction: str, theme: str, stocks: list):
     else:
         base = "区间震荡"
 
-    if theme in ["算力", "机器人", "光模块"] and "利好" in direction:
+    if theme == "算力" and "利好" in direction:
         return f"{base}，高弹性题材可能更强"
-    if theme in ["核电", "风电", "光伏", "储能"] and "利好" in direction:
+    if theme == "新能源" and "利好" in direction:
         return f"{base}，偏板块中期催化"
+    if theme == "金融" and "利好" in direction:
+        return f"{base}，更偏指数与权重联动"
     return base
 
 
@@ -320,17 +324,37 @@ def analyze_news(text: str, stocks: list):
     }
 
 
-def send(msg: str):
+def classify_channels(analysis: dict):
+    theme = analysis.get("theme", "综合")
+
+    channels = []
+
+    if theme == "算力":
+        channels.append("ai")
+    elif theme == "新能源":
+        channels.append("energy")
+    elif theme == "金融":
+        channels.append("finance")
+
+    return channels
+
+
+def send_to_channel(channel: str, msg: str):
+    webhook = FEISHU_WEBHOOKS.get(channel)
+    if not webhook:
+        print(f"[{now_full()}] 未找到 channel={channel} 的 webhook")
+        return
+
     data = {
         "msg_type": "text",
         "content": {"text": msg},
     }
+
     try:
-        resp = session.post(FEISHU_WEBHOOK, json=data, headers=COMMON_HEADERS, timeout=(8, 12))
-        print(f"[{now_full()}] 飞书返回状态 {resp.status_code}")
-        print(f"[{now_full()}] 飞书返回内容 {resp.text}")
+        resp = session.post(webhook, json=data, headers=COMMON_HEADERS, timeout=(8, 12))
+        print(f"[{now_full()}] 推送到 {channel} 状态 {resp.status_code}")
     except Exception as e:
-        print(f"[{now_full()}] 飞书发送失败 {repr(e)}")
+        print(f"[{now_full()}] 推送到 {channel} 失败 {repr(e)}")
 
 
 def build_message(source: str, line: str, stocks: list, analysis: dict) -> str:
@@ -454,16 +478,18 @@ def save(items):
         h = md5_text(f"{source}|{line}")
         stocks = match_stocks(line)
         analysis = analyze_news(line, stocks)
+        channels = classify_channels(analysis)
 
         try:
             cur.execute(
-                "INSERT INTO news(source,content,hash,related_stocks,analysis,pushed,time) VALUES(?,?,?,?,?,?,?)",
+                "INSERT INTO news(source,content,hash,related_stocks,analysis,channels,pushed,time) VALUES(?,?,?,?,?,?,?,?)",
                 (
                     source,
                     line,
                     h,
                     json.dumps(stocks, ensure_ascii=False),
                     json.dumps(analysis, ensure_ascii=False),
+                    json.dumps(channels, ensure_ascii=False),
                     0,
                     now_full(),
                 )
@@ -471,11 +497,14 @@ def save(items):
             news_id = cur.lastrowid
             new_count += 1
 
-            msg = build_message(source, line, stocks, analysis)
-            send(msg)
-
-            cur.execute("UPDATE news SET pushed=1 WHERE id=?", (news_id,))
-            pushed_count += 1
+            if channels:
+                msg = build_message(source, line, stocks, analysis)
+                for ch in channels:
+                    send_to_channel(ch, msg)
+                cur.execute("UPDATE news SET pushed=1 WHERE id=?", (news_id,))
+                pushed_count += 1
+            else:
+                print(f"[{now_full()}] 未分类到群，不推送: {line[:40]}")
 
         except sqlite3.IntegrityError:
             pass
@@ -510,7 +539,7 @@ def startup():
 def home():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT source,content,time,pushed,related_stocks,analysis FROM news ORDER BY id DESC LIMIT 200")
+    cur.execute("SELECT source,content,time,pushed,related_stocks,analysis,channels FROM news ORDER BY id DESC LIMIT 200")
     rows = cur.fetchall()
     conn.close()
 
@@ -518,7 +547,7 @@ def home():
     <html>
     <head>
       <meta charset="utf-8">
-      <title>AI消息监控</title>
+      <title>多群分类监控</title>
       <style>
         body { font-family: Arial, sans-serif; max-width: 1100px; margin: 20px auto; }
         .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
@@ -528,16 +557,12 @@ def home():
       </style>
     </head>
     <body>
-      <h2>AI消息监控</h2>
-      <p>
-        <a href="/refresh">手动抓取</a> |
-        <a href="/test_push">测试飞书</a> |
-        <a href="/force_push">强制推送前5条</a>
-      </p>
+      <h2>多群分类监控</h2>
+      <p><a href="/refresh">手动抓取</a> | <a href="/test_push">测试三群</a></p>
       <hr>
     """
 
-    for source, content, t, pushed, related_stocks, analysis_json in rows:
+    for source, content, t, pushed, related_stocks, analysis_json, channels_json in rows:
         try:
             stock_list = json.loads(related_stocks) if related_stocks else []
         except Exception:
@@ -548,10 +573,15 @@ def home():
         except Exception:
             analysis = {}
 
+        try:
+            channels = json.loads(channels_json) if channels_json else []
+        except Exception:
+            channels = []
+
         status = '<span class="pushed">已推送</span>' if pushed == 1 else ""
 
         html += '<div class="card">'
-        html += f'<div class="time">【{source}】 {t} {status}</div>'
+        html += f'<div class="time">【{source}】 {t} {status} / 群: {",".join(channels) if channels else "无"}</div>'
         html += f"<div>{content}</div>"
 
         if analysis:
@@ -583,20 +613,7 @@ def refresh():
 
 @app.get("/test_push")
 def test_push():
-    send("【测试推送】如果你看到这条，说明 Railway 到飞书是通的。")
+    send_to_channel("ai", "【测试推送】AI算力群测试")
+    send_to_channel("energy", "【测试推送】新能源群测试")
+    send_to_channel("finance", "【测试推送】金融群测试")
     return {"ok": True}
-
-
-@app.get("/force_push")
-def force_push():
-    items = fetch_all()
-
-    pushed = 0
-    for source, line in items[:5]:
-        stocks = match_stocks(line)
-        analysis = analyze_news(line, stocks)
-        msg = build_message(source, line, stocks, analysis)
-        send(msg)
-        pushed += 1
-
-    return {"ok": True, "count": pushed}
